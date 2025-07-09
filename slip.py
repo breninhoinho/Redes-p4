@@ -43,22 +43,69 @@ class Enlace:
     def __init__(self, linha_serial):
         self.linha_serial = linha_serial
         self.linha_serial.registrar_recebedor(self.__raw_recv)
+        self.callback = None
+        self.buffer = bytearray()
+        self.escaping = False  # flag para indicar byte de escape
 
     def registrar_recebedor(self, callback):
         self.callback = callback
 
     def enviar(self, datagrama):
-        # TODO: Preencha aqui com o código para enviar o datagrama pela linha
-        # serial, fazendo corretamente a delimitação de quadros e o escape de
-        # sequências especiais, de acordo com o protocolo CamadaEnlace (RFC 1055).
-        pass
+        SLIP_END = 0xC0
+        SLIP_ESC = 0xDB
+        SLIP_ESC_END = 0xDC
+        SLIP_ESC_ESC = 0xDD
+
+        quadro = bytearray()
+        quadro.append(SLIP_END)  # início do quadro
+
+        for byte in datagrama:
+            if byte == SLIP_END:
+                quadro += bytes([SLIP_ESC, SLIP_ESC_END])
+            elif byte == SLIP_ESC:
+                quadro += bytes([SLIP_ESC, SLIP_ESC_ESC])
+            else:
+                quadro.append(byte)
+
+        quadro.append(SLIP_END)  # fim do quadro
+
+        self.linha_serial.enviar(quadro)
 
     def __raw_recv(self, dados):
-        # TODO: Preencha aqui com o código para receber dados da linha serial.
-        # Trate corretamente as sequências de escape. Quando ler um quadro
-        # completo, repasse o datagrama contido nesse quadro para a camada
-        # superior chamando self.callback. Cuidado pois o argumento dados pode
-        # vir quebrado de várias formas diferentes - por exemplo, podem vir
-        # apenas pedaços de um quadro, ou um pedaço de quadro seguido de um
-        # pedaço de outro, ou vários quadros de uma vez só.
-        pass
+        SLIP_END = 0xC0
+        SLIP_ESC = 0xDB
+        SLIP_ESC_END = 0xDC
+        SLIP_ESC_ESC = 0xDD
+
+        try:
+            for byte in dados:
+                if byte == SLIP_END:
+                    if len(self.buffer) > 0:
+                        # quadro completo
+                        datagrama = bytes(self.buffer)
+                        self.buffer.clear()
+
+                        # descarta datagramas vazios
+                        if datagrama and self.callback:
+                            self.callback(datagrama)
+                    else:
+                        # ignora datagramas vazios entre dois ENDs
+                        self.buffer.clear()
+                        self.escaping = False
+                elif self.escaping:
+                    if byte == SLIP_ESC_END:
+                        self.buffer.append(SLIP_END)
+                    elif byte == SLIP_ESC_ESC:
+                        self.buffer.append(SLIP_ESC)
+                    else:
+                        # byte inválido após escape, descarta quadro
+                        self.buffer.clear()
+                    self.escaping = False
+                elif byte == SLIP_ESC:
+                    self.escaping = True
+                else:
+                    self.buffer.append(byte)
+        except Exception as e:
+            # erro de parsing ou no callback — descarta quadro malformado
+            self.buffer.clear()
+            self.escaping = False
